@@ -31,6 +31,22 @@ app.post("/articles", async (req, res) => {
   }
 });
 
+app.get("/articleinfo", async (req, res) => {
+  try {
+    const { url } = req.query;
+    // ここで実際の記事情報を取得する処理を実装する
+    // 今回はダミーの情報を返す
+    const articleInfo = {
+      title: "Dummy title",
+      content: "Dummy content",
+    };
+    res.json(articleInfo);
+  } catch (error) {
+    console.error("Error fetching article info:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
 const PORT = process.env.PORT || 3001;
 app.listen(PORT, () => {
   console.log(`Server running on port ${PORT}`);
