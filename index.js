@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const express = require("express");
 const cors = require("cors");
 const { Pool } = require("pg");
@@ -12,7 +14,7 @@ app.use(express.json());
 const { Configuration, OpenAIApi } = require("openai");
 
 const configuration = new Configuration({
-  apiKey: "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",
+  apiKey: process.env.OPENAI_API_KEY,
 });
 const openai = new OpenAIApi(configuration);
 
@@ -28,7 +30,7 @@ const pool = new Pool({
 
 app.get("/articles", async (req, res) => {
   try {
-    const allArticles = await pool.query("SELECT * FROM articles ORDER BY id DESC");
+    const allArticles = await pool.query("SELECT * FROM articles WHERE is_archived = false ORDER BY id DESC");
     res.json(allArticles.rows);
   } catch (error) {
     // console.error("Error fetching articles:", error);
@@ -40,20 +42,43 @@ app.post("/articles", async (req, res) => {
   try {
     const { title, url, thumbnail_url } = req.body;
 
-    // console.log("Fetching article content...");
-    const summarizedContent = await summarizeArticle(url);
-    // console.log("Article content fetched:", summarizedContent);
-
-    // console.log("Inserting article into the database...");
+    // First, insert the article into the database with a placeholder content
     const newArticle = await pool.query(
-      "INSERT INTO articles (title, url, content, thumbnail_url) VALUES ($1, $2, $3, $4) RETURNING *",
-      [title, url, summarizedContent, thumbnail_url]
+      "INSERT INTO articles (title, url, content, thumbnail_url, is_summarized) VALUES ($1, $2, $3, $4, $5) RETURNING *",
+      [title, url, "Summarizing content...", thumbnail_url, false]
     );
-    // console.log("Article inserted:", newArticle.rows[0]);
+
+    // Then, start the summarization process in the background
+    summarizeArticle(url).then(async summarizedContent => {
+      // Once the content is summarized, update the article in the database
+      await pool.query(
+        "UPDATE articles SET content = $1, is_summarized = $2 WHERE id = $3",
+        [summarizedContent, true, newArticle.rows[0].id]
+      );
+    }).catch(error => {
+      console.error("Error summarizing article:", error);
+    });
 
     res.json(newArticle.rows[0]);
   } catch (error) {
-    // console.error("Error inserting article:", error);
+    console.error("Error inserting article:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.post("/articles/:id/archive", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Update the article to set is_archived to true
+    await pool.query(
+      "UPDATE articles SET is_archived = $1 WHERE id = $2",
+      [true, id]
+    );
+
+    res.status(204).end(); // Send back a 204 No Content response
+  } catch (error) {
+    console.error("Error archiving article:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
@@ -82,6 +107,29 @@ app.get("/articleinfo", async (req, res) => {
 
   } catch (error) {
     // console.error("Error fetching article info:", error);
+    res.status(500).json({ message: "Internal server error" });
+  }
+});
+
+app.patch("/articles/:id/refresh-summary", async (req, res) => {
+  const { id } = req.params;
+  try {
+    const { rows } = await pool.query("SELECT url FROM articles WHERE id = $1", [id]);
+    const url = rows[0]?.url;
+    if (!url) {
+      res.status(404).json({ message: "Article not found." });
+      return;
+    }
+
+    // Set the content to 'Summarizing content...' initially
+    await pool.query("UPDATE articles SET content = $1 WHERE id = $2", ['Summarizing content...', id]);
+
+    const newSummary = await summarizeArticle(url);
+
+    await pool.query("UPDATE articles SET content = $1 WHERE id = $2", [newSummary, id]);
+    res.json({ message: "Article summary refreshed successfully." });
+  } catch (error) {
+    console.error("Error refreshing article summary:", error);
     res.status(500).json({ message: "Internal server error" });
   }
 });
@@ -175,15 +223,17 @@ async function getSummarizeAll(text) {
   下記の記事を日本語で要約してください。
 
   # 条件
-  - 記事の重要なポイントを3つに分けて見出しを設定してください
-  - 各見出しに箇条書きで内容を書いてください
-  - マークダウン形式で装飾してください
+  - 箇条書きで内容を書いてください
+  - html形式で装飾してください
 
   # 雛形
-  ## 見出し1がここに入る
-  - ここに箇条書きが入る
-  - ここに箇条書きが入る
-  - ここに箇条書きが入る
+  <ul>
+    <li>ここに要約が入る</li>
+    <li>ここに要約が入る</li>
+    <li>ここに要約が入る</li>
+    <li>ここに要約が入る</li>
+    <li>ここに要約が入る</li>
+  </ul>
 
   # 記事
   ${text}
